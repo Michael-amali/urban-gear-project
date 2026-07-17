@@ -1,0 +1,12 @@
+.urban_venv/
+__pycache__/
+*.py[cod]s
+.pytest_cache/
+logs/
+data/
+
+.env
+*.pyc
+.DS_Store
+
+.user.yml

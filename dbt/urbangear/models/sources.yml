@@ -1,0 +1,11 @@
+version: 2
+sources:
+  - name: staging
+    database: urbangear_dw
+    schema: staging
+    tables:
+      - name: daily_orders
+        description: Staging table loaded from Parquet via Airflow
+        columns:
+          - name: order_id
+            tests: [not_null, unique]

@@ -1,0 +1,21 @@
+name: 'urbangear'
+version: '1.0'
+config-version: 2
+profile: 'urbangear'
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+models:
+  urbangear:
+    staging:
+      +materialized: incremental
+      +incremental_strategy: delete+insert
+      +schema: staging
+      +tags: ['daily']
+    marts:
+      +materialized: incremental
+      +incremental_strategy: delete+insert
+      +schema: analytics
+      +tags: ['daily']

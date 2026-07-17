@@ -1,0 +1,21 @@
+urbangear:
+  outputs:
+    local:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST', 'postgres-warehouse') }}"
+      user: "{{ env_var('POSTGRES_USER', 'urbangear') }}"
+      pass: "{{ env_var('POSTGRES_PASSWORD', 'urbangear123') }}"
+      dbname: "{{ env_var('POSTGRES_DB', 'urbangear_dw') }}"
+      schema: analytics
+      port: 5432
+      threads: 4
+    prod:
+      type: redshift
+      host: "{{ env_var('REDSHIFT_HOST') }}"
+      user: "{{ env_var('REDSHIFT_USER') }}"
+      pass: "{{ env_var('REDSHIFT_PASSWORD') }}"
+      dbname: "{{ env_var('REDSHIFT_DB') }}"
+      schema: analytics
+      port: 5439
+      threads: 4
+  target: local

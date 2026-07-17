@@ -1,0 +1,17 @@
+version: 2
+models:
+  - name: fct_daily_sales
+    description: Daily sales fact - one row per order line
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests: [not_null]
+      - name: platform
+        tests: [not_null, {accepted_values: {values: ['website','mobile_app','marketplace']}}]
+      - name: quantity
+        tests: [not_null]
+      - name: net_revenue
+        tests: [not_null]
+      - name: order_date
+        tests: [not_null]
