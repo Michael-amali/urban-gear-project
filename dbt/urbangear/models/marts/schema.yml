@@ -1,17 +1,28 @@
 version: 2
 models:
   - name: fct_daily_sales
-    description: Daily sales fact - one row per order line
+    description: >
+      Daily sales fact table — one row per order line item.
+      Grain: one product purchased in one order.
+      Populated by the UrbanGear daily Airflow pipeline.
+
     columns:
       - name: order_id
+        description: Unique identifier for the order line item
         tests: [not_null, unique]
+
       - name: customer_id
+        description: Foreign key to the customer dimension
         tests: [not_null]
+
       - name: platform
         tests: [not_null, {accepted_values: {values: ['website','mobile_app','marketplace']}}]
+
       - name: quantity
         tests: [not_null]
+
       - name: net_revenue
         tests: [not_null]
+
       - name: order_date
         tests: [not_null]
