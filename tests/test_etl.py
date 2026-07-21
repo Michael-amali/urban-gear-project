@@ -35,6 +35,7 @@ def spark():
 
     spark.stop()
 
+
 def test_negative_qty_rejected(spark):
     from etl.etl_job import tag_and_route, RAW_ORDER_SCHEMA
     data = [("o1","c1","website",datetime.now(),"p1","Prod","Cat",-5,10.0,0.0,0.0,0.0,"CARD","US","CA","LA",False,None)]
@@ -42,6 +43,7 @@ def test_negative_qty_rejected(spark):
     clean, rej = tag_and_route(df, "2026-06-21")
     assert clean.count()==0 and rej.count()==1
     assert rej.first()["rejection_reason"]=="negative_quantity"
+
 
 def test_future_date_rejected(spark):
     from etl.etl_job import tag_and_route, RAW_ORDER_SCHEMA
@@ -51,6 +53,7 @@ def test_future_date_rejected(spark):
     df = spark.createDataFrame(data, schema=RAW_ORDER_SCHEMA)
     clean, rej = tag_and_route(df, "2026-06-21")
     assert rej.count()==1
+    
 
 def test_transform_revenue(spark):
     from etl.etl_job import tag_and_route, transform_clean, RAW_ORDER_SCHEMA

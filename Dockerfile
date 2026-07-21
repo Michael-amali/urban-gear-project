@@ -19,5 +19,7 @@ RUN pip install --no-cache-dir \
     sqlalchemy \
     psycopg2-binary \
     python-dotenv \
+    boto3==1.34.0 \
     dbt-core \
-    dbt-postgres
+    dbt-postgres \
+    apache-airflow-providers-slack

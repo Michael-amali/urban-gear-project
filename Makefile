@@ -4,16 +4,16 @@ setup:
 	pip install -r requirements.txt
 	cp -n .env.example .env || true
 	mkdir -p data/raw data/processed data/rejected data/metrics
-	@echo "Setup complete. Edit .env if needed"
+	@echo "Setup complete. Edit .env if needed (ENV=local|local-s3|prod)"
 
 generate-data:
-	python scripts/generate_sample_data.py --days 7 --records-per-day 50000 --bad-rate 0.07
+	python scripts/generate_sample_data.py --days 7 --records-per-day 50000 --bad-rate 0.07 --env $${ENV:-local}
 
 test:
 	pytest tests/ -v
 
 run-etl:
-	python etl/etl_job.py --process_date $${PROCESS_DATE:-$$(date -d yesterday +%F)} --env local
+	python etl/etl_job.py --process_date $${PROCESS_DATE:-$$(date -d yesterday +%F)} --env $${ENV:-local}
 
 run-dbt:
 	cd dbt/urbangear && dbt deps && dbt run --profiles-dir . --target local && dbt test --profiles-dir . --target local

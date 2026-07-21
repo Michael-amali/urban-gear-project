@@ -1,19 +1,20 @@
 """
-UrbanGear Daily Sales ETL Job - Hybrid Local/S3
-Run: python etl/etl_job.py --process_date 2026-03-21 --env local
+UrbanGear Daily Sales ETL Job
 """
 import sys, json, logging, argparse, os
 from datetime import datetime, timedelta
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from dotenv import load_dotenv
+load_dotenv()  # before PipelineConfig so .env vars are visible
+
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, TimestampType, BooleanType
 from pyspark.sql.window import Window
-from config.pipeline_config import PipelineConfig
-from dotenv import load_dotenv
-load_dotenv()
+from config.pipeline_config import PipelineConfig, VALID_ENVS
+from config.s3_client import get_s3_client, s3a_to_key
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ RAW_ORDER_SCHEMA = StructType([
 ])
 
 def create_spark_session(app_name: str) -> SparkSession:
-    return (
+    builder = (
         SparkSession.builder.appName(app_name)
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
@@ -49,31 +50,67 @@ def create_spark_session(app_name: str) -> SparkSession:
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .config("spark.sql.parquet.compression.codec", "snappy")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-        .getOrCreate()
     )
 
+    if PipelineConfig.use_object_storage():
+        builder = (
+            builder
+            .config(
+                "spark.jars.packages",
+                "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
+            )
+            .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+            .config("spark.hadoop.fs.s3a.path.style.access", "true")
+            .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "true")
+            .config(
+                "spark.hadoop.fs.s3a.aws.credentials.provider",
+                "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+            )
+        )
+        if PipelineConfig.AWS_ACCESS_KEY_ID:
+            builder = builder.config(
+                "spark.hadoop.fs.s3a.access.key", PipelineConfig.AWS_ACCESS_KEY_ID
+            )
+        if PipelineConfig.AWS_SECRET_ACCESS_KEY:
+            builder = builder.config(
+                "spark.hadoop.fs.s3a.secret.key", PipelineConfig.AWS_SECRET_ACCESS_KEY
+            )
+        if PipelineConfig.S3_ENDPOINT_URL:
+            builder = builder.config(
+                "spark.hadoop.fs.s3a.endpoint", PipelineConfig.S3_ENDPOINT_URL
+            )
+
+    return builder.getOrCreate()
+
 def extract_raw_data(spark: SparkSession, process_date: str) -> DataFrame:
-    if PipelineConfig.ENV == "local":
-        raw_path = f"{PipelineConfig.S3_RAW}/orders/dt={process_date}/"
-        logger.info(f"[LOCAL] Reading from {raw_path}")
+    raw_path = f"{PipelineConfig.S3_RAW}/orders/dt={process_date}/"
+    logger.info(f"[EXTRACT] ENV={PipelineConfig.ENV} Reading from {raw_path}")
+
+    if PipelineConfig.use_local_fs():
         if not Path(raw_path).exists():
-            raise FileNotFoundError(f"No source data at {raw_path}. Run make generate-data")
-        df = (
-            spark.read
-            .schema(RAW_ORDER_SCHEMA)
-            .option("mode", "PERMISSIVE")
-            .option("columnNameOfCorruptRecord", "_corrupt_record")
-            .json(raw_path)
-        )
+            raise FileNotFoundError(
+                f"No source data at {raw_path}. Run: "
+                f"python scripts/generate_sample_data.py --env local"
+            )
     else:
-        raw_path = f"{PipelineConfig.S3_RAW}/orders/dt={process_date}/"
-        df = (
-            spark.read
-              .schema(RAW_ORDER_SCHEMA)
-              .option("mode", "PERMISSIVE")
-              .option("columnNameOfCorruptRecord", "_corrupt_record")
-              .json(raw_path)
-        )
+        bucket, prefix = s3a_to_key(raw_path.rstrip("/") + "/")
+        s3 = get_s3_client()
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix.rstrip("/") + "/", MaxKeys=5)
+        if resp.get("KeyCount", 0) == 0:
+            backend = "MinIO" if PipelineConfig.use_minio() else "S3"
+            raise FileNotFoundError(
+                f"No source data at {raw_path}. Run: "
+                f"python scripts/generate_sample_data.py --env {PipelineConfig.ENV} "
+                f"(uploads to {backend} bucket {PipelineConfig.S3_BUCKET})"
+            )
+
+    df = (
+        spark.read
+        .schema(RAW_ORDER_SCHEMA)
+        .option("mode", "PERMISSIVE")
+        .option("columnNameOfCorruptRecord", "_corrupt_record")
+        .json(raw_path)
+    )
 
     count = df.count()
     logger.info(f"[EXTRACT] {count:,} records")
@@ -84,7 +121,7 @@ def extract_raw_data(spark: SparkSession, process_date: str) -> DataFrame:
             f"{PipelineConfig.MIN_RECORD_COUNT:,}. "
             "Source export may have failed. Aborting pipeline."
         )
-    
+
     return df
 
 def tag_and_route(df: DataFrame, process_date: str):
@@ -198,81 +235,64 @@ def collect_metrics(raw_df: DataFrame, clean_df: DataFrame, rejected_df: DataFra
     try:
         reasons = rejected_df.groupBy("rejection_reason").count().collect()
         rule_counts = {r["rejection_reason"]: r["count"] for r in reasons}
-    except:
+    except Exception:
         rule_counts = {}
 
     metrics = {
-        "process_date": process_date, 
-        "total_count": total, 
-        "clean_count": clean, 
-        "rejected_count": rejected, 
-        "reject_rate": round(rejected/total, 4) if total else 0, 
-        "rule_counts": rule_counts, 
+        "process_date": process_date,
+        "total_count": total,
+        "clean_count": clean,
+        "rejected_count": rejected,
+        "reject_rate": round(rejected/total, 4) if total else 0,
+        "rule_counts": rule_counts,
         "generated_at": datetime.now().isoformat()
     }
     logger.info(f"[METRICS] {metrics}")
     return metrics
 
 def write_outputs(clean_df: DataFrame, rejected_df: DataFrame, metrics: dict, process_date: str):
-    """Write clean records, rejected records, and metrics to S3/local."""
-    # Clean records: partitioned Parquet for efficient downstream reads
-
+    """Write clean records, rejected records, and metrics to local FS / MinIO / S3."""
     processed_path = f"{PipelineConfig.S3_PROCESSED}/orders/"
     rejected_path = f"{PipelineConfig.S3_REJECTED}/orders/dt={process_date}/"
-    metrics_dir = Path(f"{PipelineConfig.S3_METRICS}/orders/dt={process_date}/")
-    metrics_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = f"{PipelineConfig.S3_METRICS}/orders/dt={process_date}/metrics.json"
 
-    if PipelineConfig.ENV == "local":
+    (
+        clean_df
+        .repartition(F.col("order_year"), F.col("order_month"), F.col("order_day"))
+        .write.mode("overwrite")
+        .partitionBy("order_year", "order_month", "order_day")
+        .parquet(processed_path)
+    )
+    if rejected_df.count() > 0:
         (
-            clean_df
-            .repartition(F.col("order_year"), F.col("order_month"), F.col("order_day"))
+            rejected_df
+            .coalesce(1)
             .write.mode("overwrite")
-            .partitionBy("order_year", "order_month", "order_day")
-            .parquet(processed_path)
+            .parquet(rejected_path)
         )
-        if rejected_df.count() > 0:
-            (
-                rejected_df
-                .coalesce(1)
-                .write.mode("overwrite")
-                .parquet(rejected_path)
-            )
 
+    if PipelineConfig.use_local_fs():
+        metrics_dir = Path(f"{PipelineConfig.S3_METRICS}/orders/dt={process_date}/")
+        metrics_dir.mkdir(parents=True, exist_ok=True)
         (metrics_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     else:
-        import boto3
-        (
-            clean_df
-            .repartition(F.col("order_year"), F.col("order_month"), F.col("order_day"))
-            .write.mode("overwrite")
-            .partitionBy("order_year", "order_month", "order_day")
-            .parquet(processed_path)
-         )
-        if rejected_df.count() > 0:
-            (
-                rejected_df
-                .coalesce(1)
-                .write.mode("overwrite")
-                .parquet(rejected_path)
-            )
+        bucket, key = s3a_to_key(metrics_path)
+        s3 = get_s3_client()
+        s3.put_object(Bucket=bucket, Key=key, Body=json.dumps(metrics, indent=2))
 
-        # Metrics sidecar (read by Airflow quality gate)
-        metrics_path = f"{PipelineConfig.S3_METRICS}/orders/dt={process_date}/metrics.json"
-
-        s3 = boto3.client("s3", region_name=PipelineConfig.AWS_REGION)
-        bucket, key = metrics_path.replace("s3://", "").split("/", 1)
-        s3.put_object(Bucket=bucket, Key=key, Body=json.dumps(metrics))
-
-    logger.info(f"[WRITE] Done - Clean: {processed_path} Rejected: {rejected_path} Metrics: {metrics_dir}")
+    logger.info(f"[WRITE] Quality metrics written to {metrics_path}")
+    logger.info(f"[WRITE] Done - Clean: {processed_path} Rejected: {rejected_path} Metrics: {metrics_path}")
 
 
 def main(process_date: str = None, env: str = None):
-    if env: os.environ["ENV"] = env
+    PipelineConfig.reload(env=env or os.getenv("ENV", "local"))
+
     if process_date is None:
         process_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     logger.info("=" * 60)
     logger.info("URBANGEAR DAILY SALES ETL")
+    logger.info(f"ENV: {PipelineConfig.ENV}")
     logger.info(f"Processing date: {process_date}")
     logger.info(f"Started: {datetime.now().isoformat()}")
     logger.info("=" * 60)
@@ -297,6 +317,11 @@ def main(process_date: str = None, env: str = None):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--process_date", default=None)
-    p.add_argument("--env", default="local")
+    p.add_argument(
+        "--env",
+        default=os.getenv("ENV", "local"),
+        choices=list(VALID_ENVS),
+        help="Storage backend: local (filesystem), local-s3 (MinIO), prod (AWS S3)",
+    )
     args = p.parse_args()
     main(args.process_date, args.env)

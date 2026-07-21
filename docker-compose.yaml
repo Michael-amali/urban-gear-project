@@ -85,7 +85,14 @@ services:
 
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
 
-      ENV: local
+      # local | local-s3 | prod
+      ENV: ${ENV:-local-s3}
+
+      S3_BUCKET: ${S3_BUCKET:-urbangear-data-lake-myk}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-https://play.min.io}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
 
       POSTGRES_HOST: postgres-warehouse
       POSTGRES_USER: ${WAREHOUSE_USER}
@@ -124,7 +131,14 @@ services:
 
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_USER}:${AIRFLOW_PASSWORD}@postgres-airflow:5432/${AIRFLOW_DB}
 
-      ENV: local
+      # local | local-s3 | prod
+      ENV: ${ENV:-local-s3}
+
+      S3_BUCKET: ${S3_BUCKET:-urbangear-data-lake-myk}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-https://play.min.io}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
 
       POSTGRES_HOST: postgres-warehouse
       POSTGRES_USER: ${WAREHOUSE_USER}
